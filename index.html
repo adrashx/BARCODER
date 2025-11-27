@@ -308,10 +308,29 @@
                 if(caps.zoom) {
                     ui.zoomUi.classList.remove('opacity-0');
                     ui.zoomUi.classList.add('opacity-100');
-                    ui.zoomSlider.min = caps.zoom.min;
-                    ui.zoomSlider.max = caps.zoom.max;
+
+                    // OPTIMIZATION: Start at 1.3x (30%) zoom.
+                    // 1x often has distortion at edges causing scan errors.
+                    const desiredMin = 1.3;
+                    const deviceMin = caps.zoom.min;
+                    const deviceMax = caps.zoom.max;
+                    
+                    // Ensure the requested 1.3x is within device capabilities
+                    const effectiveMin = Math.max(deviceMin, desiredMin);
+                    
+                    // Configure Slider
+                    ui.zoomSlider.min = effectiveMin;
+                    ui.zoomSlider.max = deviceMax;
                     ui.zoomSlider.step = caps.zoom.step || 0.1;
-                    ui.zoomSlider.value = track.getSettings().zoom || 1;
+                    ui.zoomSlider.value = effectiveMin;
+
+                    // Update UI Label to show new start point
+                    const minLabel = ui.zoomUi.querySelector('span');
+                    if(minLabel) minLabel.innerText = effectiveMin + "x";
+                    
+                    // Apply immediately
+                    track.applyConstraints({ advanced: [{ zoom: effectiveMin }] })
+                        .catch(e => console.log("Zoom not supported directly", e));
                     
                     ui.zoomSlider.oninput = () => {
                         track.applyConstraints({ advanced: [{ zoom: ui.zoomSlider.value }] });
