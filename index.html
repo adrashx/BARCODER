@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pro Inventory Scanner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Library for Barcode Scanning -->
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f3f4f6;
+            font-family: 'Inter', sans-serif;
+        }
+        
+        /* Custom scanner overlay styles */
+        #reader {
+            width: 100%;
+            border-radius: 0.75rem;
+            overflow: hidden;
+            background: #000;
+            position: relative;
+        }
+
+        #reader video {
+            object-fit: cover;
+            border-radius: 0.75rem;
+        }
+
+        /* Hide the library's default UI elements we don't want */
+        #reader__dashboard_section_csr span, 
+        #reader__dashboard_section_swaplink {
+            display: none !important;
+        }
+
+        .scan-region-highlight {
+            border-radius: 12px;
+            box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.5);
+            outline: 2px solid #3b82f6;
+            outline-offset: -2px;
+            z-index: 10;
+        }
+
+        /* Animation for successful scan */
+        @keyframes flash-green {
+            0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+            50% { box-shadow: 0 0 0 20px rgba(34, 197, 94, 0.5); border-color: #22c55e; }
+            100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+        }
+
+        .scan-success {
+            animation: flash-green 0.5s ease-out;
+            border: 4px solid #22c55e !important;
+        }
+
+        /* Cooldown overlay */
+        .cooldown-overlay {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 1.5rem;
+            z-index: 50;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .cooldown-active {
+            opacity: 1;
+        }
+
+        /* Table animations */
+        .row-highlight {
+            animation: bg-flash 1s ease-out;
+        }
+        @keyframes bg-flash {
+            0% { background-color: #dcfce7; }
+            100% { background-color: transparent; }
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col md:flex-row overflow-hidden">
+
+    <!-- Left Panel: Scanner -->
+    <div class="w-full md:w-5/12 h-full flex flex-col bg-white border-r border-gray-200 shadow-lg z-10">
+        <div class="p-4 bg-slate-900 text-white flex justify-between items-center">
+            <div>
+                <h1 class="text-xl font-bold"><i class="fa-solid fa-barcode mr-2"></i>Pro Scanner</h1>
+                <p class="text-xs text-slate-400">Inventory Mode • 2s Delay</p>
+            </div>
+            <div id="status-indicator" class="w-3 h-3 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]"></div>
+        </div>
+
+        <!-- Camera Controls -->
+        <div class="p-3 bg-slate-800 border-b border-slate-700 flex gap-2">
+            <select id="camera-select" class="flex-1 bg-slate-700 text-white text-sm rounded px-2 py-1 outline-none border border-slate-600">
+                <option value="" disabled selected>Loading cameras...</option>
+            </select>
+            <button id="btn-torch" class="hidden px-3 py-1 bg-slate-700 text-yellow-400 rounded hover:bg-slate-600 border border-slate-600" title="Toggle Flashlight">
+                <i class="fa-solid fa-bolt"></i>
+            </button>
+            <button id="btn-start" class="px-4 py-1 bg-blue-600 text-white rounded hover:bg-blue-500 font-medium text-sm">Start</button>
+            <button id="btn-stop" class="hidden px-4 py-1 bg-red-600 text-white rounded hover:bg-red-500 font-medium text-sm">Stop</button>
+        </div>
+
+        <!-- Viewfinder -->
+        <div class="relative flex-1 bg-black flex items-center justify-center overflow-hidden group">
+            <div id="reader" class="w-full h-full"></div>
+            
+            <!-- Cooldown Overlay -->
+            <div id="cooldown-ui" class="cooldown-overlay">
+                <i class="fa-solid fa-hourglass-half fa-spin mr-2"></i> Processing...
+            </div>
+            
+            <!-- Default Placeholder if not scanning -->
+            <div id="placeholder-ui" class="absolute text-slate-500 flex flex-col items-center">
+                <i class="fa-solid fa-camera text-4xl mb-2"></i>
+                <p>Camera is off</p>
+            </div>
+        </div>
+
+        <!-- Hardware Zoom Slider (Hidden by default) -->
+        <div id="zoom-control-panel" class="hidden p-4 bg-slate-900 border-t border-slate-700">
+            <div class="flex items-center gap-3 text-white">
+                <i class="fa-solid fa-magnifying-glass-minus text-xs text-slate-400"></i>
+                <input type="range" id="zoom-slider" min="1" max="5" step="0.1" value="1" class="w-full h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-blue-500">
+                <i class="fa-solid fa-magnifying-glass-plus text-xs text-slate-400"></i>
+                <span id="zoom-value" class="text-xs font-mono w-8 text-right">1.0x</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Right Panel: Data -->
+    <div class="w-full md:w-7/12 h-full flex flex-col bg-gray-50">
+        <!-- Stats Header -->
+        <div class="bg-white p-4 border-b flex justify-between items-center shadow-sm">
+            <div class="flex gap-6">
+                <div class="text-center">
+                    <p class="text-xs text-gray-500 uppercase font-bold tracking-wider">Total Items</p>
+                    <p id="stat-total-items" class="text-xl font-bold text-slate-800">0</p>
+                </div>
+                <div class="text-center">
+                    <p class="text-xs text-gray-500 uppercase font-bold tracking-wider">Total Qty</p>
+                    <p id="stat-total-qty" class="text-xl font-bold text-blue-600">0</p>
+                </div>
+            </div>
+            <div class="flex gap-2">
+                <button onclick="copyCSV()" class="px-3 py-2 text-sm text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded transition">
+                    <i class="fa-solid fa-copy mr-1"></i> Copy CSV
+                </button>
+                <button onclick="clearInventory()" class="px-3 py-2 text-sm text-slate-600 hover:text-red-600 hover:bg-red-50 rounded transition">
+                    <i class="fa-solid fa-trash mr-1"></i> Clear
+                </button>
+            </div>
+        </div>
+
+        <!-- Table -->
+        <div class="flex-1 overflow-auto p-4">
+            <div class="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+                <table class="w-full text-left border-collapse">
+                    <thead>
+                        <tr class="bg-gray-100 text-gray-600 text-xs uppercase">
+                            <th class="p-3 font-semibold border-b">Time</th>
+                            <th class="p-3 font-semibold border-b">Format</th>
+                            <th class="p-3 font-semibold border-b">Barcode Data</th>
+                            <th class="p-3 font-semibold border-b text-center">Qty</th>
+                            <th class="p-3 font-semibold border-b text-right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="inventory-body" class="text-sm divide-y divide-gray-100">
+                        <!-- Rows go here -->
+                        <tr id="empty-state">
+                            <td colspan="5" class="p-8 text-center text-gray-400">
+                                <i class="fa-solid fa-barcode text-3xl mb-2"></i>
+                                <p>Ready to scan. Waiting for input...</p>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Audio Beep Generator -->
+    <script>
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playBeep() {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            oscillator.type = 'square';
+            oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); // A5
+            oscillator.frequency.exponentialRampToValueAtTime(110, audioCtx.currentTime + 0.1);
+            gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            oscillator.start();
+            oscillator.stop(audioCtx.currentTime + 0.1);
+        }
+    </script>
+
+    <!-- Main Logic -->
+    <script>
+        // State
+        let html5QrCode;
+        let inventory = {}; // Key: barcode string, Value: Object
+        let lastScanTime = 0;
+        let isScanning = false;
+        const SCAN_DELAY_MS = 2000;
+        let currentTrack = null; // Video track for zoom/torch
+
+        // DOM Elements
+        const inventoryBody = document.getElementById('inventory-body');
+        const emptyState = document.getElementById('empty-state');
+        const statTotalItems = document.getElementById('stat-total-items');
+        const statTotalQty = document.getElementById('stat-total-qty');
+        const cameraSelect = document.getElementById('camera-select');
+        const btnStart = document.getElementById('btn-start');
+        const btnStop = document.getElementById('btn-stop');
+        const statusIndicator = document.getElementById('status-indicator');
+        const placeholderUi = document.getElementById('placeholder-ui');
+        const cooldownUi = document.getElementById('cooldown-ui');
+        const zoomPanel = document.getElementById('zoom-control-panel');
+        const zoomSlider = document.getElementById('zoom-slider');
+        const zoomValue = document.getElementById('zoom-value');
+        const btnTorch = document.getElementById('btn-torch');
+
+        // 1. Initialization
+        window.onload = async () => {
+            try {
+                // Initialize library
+                html5QrCode = new Html5Qrcode("reader");
+                
+                // Get Cameras
+                const devices = await Html5Qrcode.getCameras();
+                if (devices && devices.length) {
+                    cameraSelect.innerHTML = "";
+                    devices.forEach(device => {
+                        const option = document.createElement("option");
+                        option.value = device.id;
+                        option.text = device.label || `Camera ${device.id}`;
+                        cameraSelect.appendChild(option);
+                    });
+                    
+                    // Auto-select back camera if possible
+                    const backCam = devices.find(d => d.label.toLowerCase().includes('back') || d.label.toLowerCase().includes('environment'));
+                    if(backCam) cameraSelect.value = backCam.id;
+                } else {
+                    cameraSelect.innerHTML = "<option>No cameras found</option>";
+                }
+            } catch (err) {
+                console.error("Error getting cameras", err);
+                cameraSelect.innerHTML = "<option>Camera Error</option>";
+            }
+        };
+
+        // 2. Start Scanning
+        btnStart.addEventListener('click', async () => {
+            const cameraId = cameraSelect.value;
+            if (!cameraId) return alert("Please select a camera first.");
+
+            try {
+                btnStart.classList.add('hidden');
+                btnStop.classList.remove('hidden');
+                placeholderUi.classList.add('hidden');
+                statusIndicator.classList.remove('bg-red-500');
+                statusIndicator.classList.add('bg-green-500', 'animate-pulse');
+
+                const config = {
+                    fps: 15, // High FPS for smoother scanning
+                    qrbox: { width: 250, height: 250 },
+                    aspectRatio: 1.0,
+                    focusMode: "continuous" 
+                };
+
+                await html5QrCode.start(
+                    cameraId, 
+                    config, 
+                    onScanSuccess, 
+                    onScanFailure
+                );
+                
+                isScanning = true;
+                setupCameraControls(); // Initialize Zoom/Torch after start
+
+            } catch (err) {
+                console.error(err);
+                alert("Failed to start camera. Ensure permissions are granted.");
+                stopScanning();
+            }
+        });
+
+        // 3. Stop Scanning
+        btnStop.addEventListener('click', stopScanning);
+
+        async function stopScanning() {
+            if (isScanning) {
+                await html5QrCode.stop();
+                isScanning = false;
+            }
+            btnStart.classList.remove('hidden');
+            btnStop.classList.add('hidden');
+            placeholderUi.classList.remove('hidden');
+            statusIndicator.classList.remove('bg-green-500', 'animate-pulse');
+            statusIndicator.classList.add('bg-red-500');
+            zoomPanel.classList.add('hidden');
+            btnTorch.classList.add('hidden');
+        }
+
+        // 4. Camera Capabilities (Zoom/Torch)
+        function setupCameraControls() {
+            // Internal hack to access the video track from html5-qrcode
+            // The library creates a video element inside #reader
+            const videoElement = document.querySelector("#reader video");
+            if (!videoElement || !videoElement.srcObject) return;
+
+            const stream = videoElement.srcObject;
+            const track = stream.getVideoTracks()[0];
+            currentTrack = track;
+
+            const capabilities = track.getCapabilities();
+            const settings = track.getSettings();
+
+            // Zoom Setup
+            if (capabilities.zoom) {
+                zoomPanel.classList.remove('hidden');
+                zoomSlider.min = capabilities.zoom.min;
+                zoomSlider.max = capabilities.zoom.max;
+                zoomSlider.step = capabilities.zoom.step || 0.1;
+                zoomSlider.value = settings.zoom || 1;
+                zoomValue.innerText = `${zoomSlider.value}x`;
+
+                zoomSlider.oninput = async () => {
+                    const zoom = parseFloat(zoomSlider.value);
+                    zoomValue.innerText = `${zoom}x`;
+                    await track.applyConstraints({ advanced: [{ zoom: zoom }] });
+                };
+            }
+
+            // Torch Setup
+            if (capabilities.torch) {
+                btnTorch.classList.remove('hidden');
+                let torchStatus = false;
+                btnTorch.onclick = async () => {
+                    torchStatus = !torchStatus;
+                    await track.applyConstraints({ advanced: [{ torch: torchStatus }] });
+                    btnTorch.classList.toggle('text-yellow-400');
+                    btnTorch.classList.toggle('text-white');
+                };
+            }
+        }
+
+        // 5. Success Logic (The Core Requirement)
+        function onScanSuccess(decodedText, decodedResult) {
+            const now = Date.now();
+            
+            // Time Cooldown Logic
+            if (now - lastScanTime < SCAN_DELAY_MS) {
+                return; // Ignore scan
+            }
+
+            lastScanTime = now;
+            playBeep();
+            triggerVisualSuccess();
+            activateCooldownUI();
+
+            // Data Logic
+            handleInventoryUpdate(decodedText, decodedResult);
+        }
+
+        function onScanFailure(error) {
+            // handle error if needed, usually ignored to reduce noise
+        }
+
+        // 6. Inventory Management
+        function handleInventoryUpdate(code, result) {
+            const format = result?.result?.format?.formatName || 'UNKNOWN';
+            
+            if (inventory[code]) {
+                inventory[code].qty++;
+                inventory[code].lastScanned = new Date();
+                
+                // Visual feedback for existing row
+                const row = document.getElementById(`row-${btoa(code).replace(/=/g,'')}`);
+                if(row) {
+                    row.classList.remove('row-highlight');
+                    void row.offsetWidth; // trigger reflow
+                    row.classList.add('row-highlight');
+                }
+            } else {
+                inventory[code] = {
+                    code: code,
+                    format: format,
+                    qty: 1,
+                    firstScanned: new Date(),
+                    lastScanned: new Date()
+                };
+            }
+            updateTable();
+        }
+
+        // 7. UI Helpers
+        function triggerVisualSuccess() {
+            const reader = document.getElementById('reader');
+            reader.classList.remove('scan-success');
+            void reader.offsetWidth;
+            reader.classList.add('scan-success');
+        }
+
+        function activateCooldownUI() {
+            cooldownUi.classList.add('cooldown-active');
+            setTimeout(() => {
+                cooldownUi.classList.remove('cooldown-active');
+            }, SCAN_DELAY_MS);
+        }
+
+        function updateTable() {
+            if (Object.keys(inventory).length > 0) {
+                emptyState.style.display = 'none';
+            }
+
+            // Sort by last scanned (most recent top)
+            const sortedKeys = Object.keys(inventory).sort((a,b) => 
+                inventory[b].lastScanned - inventory[a].lastScanned
+            );
+
+            // Rebuild stats
+            let totalQty = 0;
+            
+            // We'll rebuild DOM only if needed or simple clear/fill
+            // For smoother performance, we could patch DOM, but full rebuild is fine for < 1000 items
+            inventoryBody.innerHTML = '';
+
+            sortedKeys.forEach(key => {
+                const item = inventory[key];
+                totalQty += item.qty;
+                const safeId = `row-${btoa(key).replace(/=/g,'')}`;
+                
+                const tr = document.createElement('tr');
+                tr.id = safeId;
+                tr.className = 'hover:bg-gray-50 transition-colors border-b border-gray-100 group';
+                
+                // Format time HH:MM:SS
+                const timeStr = item.lastScanned.toLocaleTimeString([], { hour12: false });
+
+                tr.innerHTML = `
+                    <td class="p-3 text-gray-500 font-mono text-xs">${timeStr}</td>
+                    <td class="p-3"><span class="bg-gray-200 text-gray-700 py-1 px-2 rounded text-xs font-bold">${item.format}</span></td>
+                    <td class="p-3 font-mono text-slate-800 font-medium break-all">${item.code}</td>
+                    <td class="p-3 text-center">
+                        <span class="inline-flex items-center justify-center px-3 py-1 rounded-full bg-blue-100 text-blue-800 font-bold text-sm min-w-[30px]">
+                            ${item.qty}
+                        </span>
+                    </td>
+                    <td class="p-3 text-right">
+                        <button onclick="deleteItem('${key}')" class="text-red-400 hover:text-red-600 p-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <i class="fa-solid fa-xmark"></i>
+                        </button>
+                    </td>
+                `;
+                inventoryBody.appendChild(tr);
+            });
+
+            statTotalItems.innerText = sortedKeys.length;
+            statTotalQty.innerText = totalQty;
+        }
+
+        // Global functions for buttons
+        window.deleteItem = (key) => {
+            if(confirm('Delete this item?')) {
+                delete inventory[key];
+                updateTable();
+                if(Object.keys(inventory).length === 0) {
+                    emptyState.style.display = 'table-row';
+                }
+            }
+        };
+
+        window.clearInventory = () => {
+            if(confirm('Clear all data?')) {
+                inventory = {};
+                inventoryBody.innerHTML = '';
+                inventoryBody.appendChild(emptyState);
+                emptyState.style.display = 'table-row';
+                statTotalItems.innerText = '0';
+                statTotalQty.innerText = '0';
+            }
+        };
+
+        window.copyCSV = () => {
+            const headers = ['Timestamp', 'Format', 'Code', 'Quantity'];
+            const rows = Object.values(inventory).map(i => [
+                i.lastScanned.toISOString(),
+                i.format,
+                `"${i.code}"`, // quote codes to prevent csv breakage
+                i.qty
+            ]);
+            
+            const csvContent = [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
+            
+            // Clipboard API might fail in iframe without permissions, using fallback
+            const textArea = document.createElement("textarea");
+            textArea.value = csvContent;
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand("Copy");
+            document.body.removeChild(textArea);
+            
+            alert('CSV data copied to clipboard!');
+        };
+
+    </script>
+</body>
+</html>
